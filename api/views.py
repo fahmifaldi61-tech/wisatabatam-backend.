@@ -1,9 +1,11 @@
 import os
+import uuid
 from dotenv import load_dotenv
 from openai import OpenAI
 from google import genai
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from django.core.cache import cache
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import Chroma
 
@@ -57,7 +59,6 @@ def ask_ai_with_fallback(prompt):
     raise Exception(" | ".join(errors))
 
 
-# Instruksi sistem per bahasa
 LANGUAGE_INSTRUCTIONS = {
     "id": (
         "Anda adalah asisten virtual pariwisata Kota Batam. "
@@ -71,16 +72,25 @@ LANGUAGE_INSTRUCTIONS = {
     ),
 }
 
+# --- KONFIGURASI CACHE PERCAKAPAN (CONTEXT MEMORY) ---
+CACHE_TIMEOUT = 60 * 60 * 24   # 24 jam, dalam detik
+MAX_HISTORY_TURNS = 6          # simpan 6 pertukaran terakhir biar prompt nggak kepanjangan
+
 
 class ChatAPIView(APIView):
     def post(self, request):
         user_input = request.data.get('message', '')
         language = request.data.get('language', 'id')
+        session_id = request.data.get('session_id') or str(uuid.uuid4())
+
         if language not in LANGUAGE_INSTRUCTIONS:
             language = 'id'
-
         if not user_input:
             return Response({'error': 'Pesan kosong'}, status=400)
+
+        # --- Ambil riwayat percakapan dari cache (kalau ada & belum expired) ---
+        cache_key = f"chat_history_{session_id}"
+        history = cache.get(cache_key, [])
 
         context = ""
         sources = []
@@ -98,20 +108,38 @@ class ChatAPIView(APIView):
             except Exception:
                 pass
 
+        # --- Susun riwayat percakapan jadi teks buat dimasukin ke prompt ---
+        history_text = ""
+        if history:
+            lines = []
+            for turn in history[-MAX_HISTORY_TURNS:]:
+                lines.append(f"User: {turn['user']}")
+                lines.append(f"AI: {turn['ai']}")
+            history_text = "\n".join(lines)
+
         instruction = LANGUAGE_INSTRUCTIONS[language]
         prompt = (
             f"{instruction}\n\n"
+            f"Riwayat percakapan sebelumnya (gunakan sebagai konteks bila relevan, "
+            f"abaikan kalau tidak nyambung dengan pertanyaan sekarang):\n{history_text}\n\n"
             f"Konteks Data / Data Context:\n{context}\n\n"
             f"Pertanyaan User / User Question: {user_input}\n"
         )
 
         try:
             result, used_provider, errors = ask_ai_with_fallback(prompt)
+
+            # --- Simpan percakapan ini ke cache, reset TTL jadi 24 jam lagi ---
+            history.append({'user': user_input, 'ai': result})
+            history = history[-MAX_HISTORY_TURNS:]
+            cache.set(cache_key, history, CACHE_TIMEOUT)
+
             return Response({
                 'response': result,
                 'provider_used': used_provider,
                 'language': language,
                 'sources': sources,
+                'session_id': session_id,
             })
         except Exception as e:
             return Response({'error': f"Semua provider gagal: {str(e)}"}, status=500)
