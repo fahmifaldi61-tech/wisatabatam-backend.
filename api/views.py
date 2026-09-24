@@ -74,7 +74,7 @@ LANGUAGE_INSTRUCTIONS = {
 
 # --- KONFIGURASI CACHE PERCAKAPAN (CONTEXT MEMORY) ---
 CACHE_TIMEOUT = 60 * 60 * 24   # 24 jam, dalam detik
-MAX_HISTORY_TURNS = 6          # simpan 6 pertukaran terakhir biar prompt nggak kepanjangan
+MAX_HISTORY_TURNS = 15         # simpan 15 pertukaran terakhir biar AI makin \"inget banyak\"
 
 
 class ChatAPIView(APIView):
